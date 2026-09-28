@@ -1,0 +1,124 @@
+# oci-retry v3.1
+name: OCI A1.Flex Capacity Retry
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write   # necesario para auto-desactivar el workflow al tener éxito
+
+env:
+  OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
+  OCI_SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
+  OCI_IMAGE_ID: ${{ secrets.OCI_IMAGE_ID }}
+  OCI_AD: ${{ secrets.OCI_AD }}
+  OCI_REGION: ${{ secrets.OCI_REGION }}
+  OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+  OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+  OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+  OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
+
+jobs:
+  try-create:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: oci-retry
+      cancel-in-progress: false
+    steps:
+      - name: Instalar OCI CLI
+        run: pip install oci-cli
+
+      - name: Configurar credenciales OCI
+        run: |
+          mkdir -p ~/.oci
+          echo "${{ secrets.OCI_PRIVATE_KEY }}" > ~/.oci/key.pem
+          chmod 600 ~/.oci/key.pem
+          cat > ~/.oci/config << EOF
+          [DEFAULT]
+          user=${OCI_USER_OCID}
+          fingerprint=${OCI_FINGERPRINT}
+          tenancy=${OCI_TENANCY_OCID}
+          region=${OCI_REGION}
+          key_file=~/.oci/key.pem
+          EOF
+          echo "OCI_CLI_SUPPRESS_FILE_PERMISSIONS_WARNING=True" >> "$GITHUB_ENV"
+
+      - name: Intentar crear la instancia (loop de 12 min)
+        id: launch
+        run: |
+          set +e
+          START_TIME=$(date +%s)
+          MAX_DURATION=720
+          SLEEP_SECS=20
+          INTENTO=1
+
+          while true; do
+            ELAPSED=$(( $(date +%s) - START_TIME ))
+            if [ $ELAPSED -ge $MAX_DURATION ]; then
+              echo "status=no_capacity" >> "$GITHUB_OUTPUT"
+              echo "### ⏳ Fin de ventana (12 min, $((INTENTO-1)) intentos). Esperando al próximo cron." >> "$GITHUB_STEP_SUMMARY"
+              break
+            fi
+
+            echo "=== Intento $INTENTO ==="
+            OUTPUT=$(oci compute instance launch \
+              --compartment-id "$OCI_COMPARTMENT_ID" \
+              --availability-domain "$OCI_AD" \
+              --shape "VM.Standard.A1.Flex" \
+              --shape-config '{"ocpus": 2, "memoryInGBs": 12}' \
+              --subnet-id "$OCI_SUBNET_ID" \
+              --image-id "$OCI_IMAGE_ID" \
+              --display-name "Dreiton" \
+              --boot-volume-size-in-gbs 100 \
+              --assign-public-ip true \
+              --metadata "{\"ssh_authorized_keys\": \"$OCI_SSH_PUBLIC_KEY\"}" \
+              --wait-for-state RUNNING 2>&1)
+            EXIT_CODE=$?
+
+            if [ $EXIT_CODE -eq 0 ]; then
+              echo "$OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+              echo "status=success" >> "$GITHUB_OUTPUT"
+              break
+            elif echo "$OUTPUT" | grep -qiE "Out of (host )?capacity"; then
+              echo "Intento $INTENTO: sin capacidad, reintento en ${SLEEP_SECS}s"
+              sleep $SLEEP_SECS
+            elif echo "$OUTPUT" | grep -qiE "TooManyRequests|\"status\": 429"; then
+              echo "Intento $INTENTO: rate limit (429), espero 60s"
+              sleep 60
+            else
+              echo "$OUTPUT" >> "$GITHUB_STEP_SUMMARY"
+              echo "status=error" >> "$GITHUB_OUTPUT"
+              break
+            fi
+
+            INTENTO=$((INTENTO + 1))
+          done
+
+      - name: Notificar éxito
+        if: steps.launch.outputs.status == 'success'
+        run: >-
+          curl -s -H "Title: OCI" -d "✅ ¡Instancia A1.Flex creada!" "ntfy.sh/${{ secrets.NTFY_TOPIC }}"
+
+      - name: Desactivar este workflow tras el éxito
+        if: steps.launch.outputs.status == 'success'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow disable oci-retry.yml --repo "${{ github.repository }}"
+
+      - name: Notificar error real
+        if: steps.launch.outputs.status == 'error'
+        run: >-
+          curl -s -H "Title: OCI" -d "❌ Error real (no es de capacidad), revisá los logs" "ntfy.sh/${{ secrets.NTFY_TOPIC }}"
+
+      - name: Fallar el job si fue error real
+        if: steps.launch.outputs.status == 'error'
+        run: exit 1
+
+      - name: Aviso de fin de ciclo (solo en ejecuciones manuales)
+        if: always() && github.event_name == 'workflow_dispatch'
+        run: >-
+          curl -s -H "Title: OCI ciclo" -d "Resultado: ${{ steps.launch.outputs.status }}" "ntfy.sh/${{ secrets.NTFY_TOPIC }}"
