@@ -3,7 +3,7 @@ name: OCI A1.Flex Capacity Retry
 
 on:
   schedule:
-    - cron: "7,22,37,52 * * * *"   # respaldo por si la cadena de relanzados se corta
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -53,7 +53,7 @@ jobs:
           set +e
           START_TIME=$(date +%s)
           MAX_DURATION=720
-          SLEEP_SECS=10
+          SLEEP_SECS=15
           INTENTO=1
 
           while true; do
