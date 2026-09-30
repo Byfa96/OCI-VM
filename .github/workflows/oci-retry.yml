@@ -53,7 +53,7 @@ jobs:
           set +e
           START_TIME=$(date +%s)
           MAX_DURATION=720
-          SLEEP_SECS=15
+          SLEEP_SECS=18
           INTENTO=1
 
           while true; do
