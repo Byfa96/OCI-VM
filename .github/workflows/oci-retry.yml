@@ -53,7 +53,7 @@ jobs:
           set +e
           START_TIME=$(date +%s)
           MAX_DURATION=720
-          SLEEP_SECS=18
+          SLEEP_SECS=20
           INTENTO=1
 
           while true; do
@@ -88,8 +88,8 @@ jobs:
               echo "Intento $INTENTO: sin capacidad, reintento en ${SLEEP_SECS}s"
               sleep $SLEEP_SECS
             elif echo "$OUTPUT" | grep -qiE "TooManyRequests|\"status\": 429"; then
-              echo "Intento $INTENTO: rate limit (429), espero 60s"
-              sleep 60
+              echo "Intento $INTENTO: rate limit (429), espero 40s"
+              sleep 40
             else
               echo "$OUTPUT" >> "$GITHUB_STEP_SUMMARY"
               echo "status=error" >> "$GITHUB_OUTPUT"
